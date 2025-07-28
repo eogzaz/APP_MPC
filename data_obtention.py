@@ -1,50 +1,85 @@
 import requests
-from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 import pandas as pd
-from astroquery.jplhorizons import Horizons
 from astroquery.mpc import MPC
+import numpy as np
+from utils import Date_to_julian
 
-def observations_MPC(asteroide):
-  # URL base
-  url_base = "https://www.minorplanetcenter.net/db_search/show_object"
+def periodo_fecha_perihelio(asteroide):
+    datos = MPC.query_object('asteroid',number=asteroide,return_fields='period,perihelion_date,perihelion_date_jd')[0]
+    periodo = float(datos['period'])*365.25
+    fecha_perihelio = float(datos['perihelion_date_jd'])
+    return periodo, fecha_perihelio
 
-  # Parámetros de búsqueda
-  params = {
-      "utf8": "✓",
-      "object_id": asteroide
-  }
+def observaciones_APIMPC(asteroide):
+    url = "https://data.minorplanetcenter.net/api/get-obs"
+    payload = {
+        "desigs": [asteroide],
+        "output_format": ["XML"]
+    }
 
-  # Realizar la solicitud GET
-  response = requests.get(url_base, params=params)
+    response = requests.get(url, json=payload)
+    if not response.ok:
+        raise RuntimeError(f"Error {response.status_code}: {response.content.decode()}")
 
-  # Verificar si la solicitud fue exitosa
-  if response.status_code == 200:
-      # Obtener el URL final de redirección
-      final_url = response.url
+    # Aquí accedemos a la clave 'XML' del JSON de respuesta
+    data = response.json()
+    xml_string = data[0].get("XML", "")
+    if not xml_string:
+        raise RuntimeError(f"No se encontró contenido XML para '{asteroide}'")
 
-      # Get the HTML content from the response
-      html_content = response.text
+    # Parseamos el XML
+    root = ET.fromstring(xml_string)
 
-      # Use BeautifulSoup to parse the HTML
-      soup = BeautifulSoup(html_content, 'html.parser')
+    # Extraemos observaciones dentro del tag <optical>
+    observaciones = []
+    for obs in root.findall(".//optical"):
+        datos = {child.tag: child.text for child in obs}
+        observaciones.append(datos)
 
-      # Find all the table tags in the HTML
-      tables = soup.find_all('table')
+    df = pd.DataFrame(observaciones)
 
-  else:
-      print(f"Error al acceder a la página del MPC Código de estado: {response.status_code}")
+    # Intentamos convertir la fecha si existe
+    if "obsTime" in df.columns:
+        df["obsTime"] = pd.to_datetime(df["obsTime"], errors="coerce")
 
-  if len(tables)== 0 or final_url == 'https://www.minorplanetcenter.net/db_search':
-    return print("Este no es un objeto en el MPC")
-  else:
-    df_observations = pd.read_html(final_url)[-1]
-    print(f"Obtencion exitosa de las observaciones del objeto: {asteroide}")
+    return df[['obsTime','mag','band']]
 
-  return df_observations
+def efemerides_API(asteroide, fecha_inicial, fecha_final):
+  url = "https://ssd.jpl.nasa.gov/api/horizons_file.api"
 
-def efemerides(asteroide,fecha_inicial, fecha_final):
-  obj = Horizons(id=asteroide,id_type='smallbody',
-                 epochs={'start': fecha_inicial, 'stop': fecha_final, 'step': '1d'})
-  eph = obj.ephemerides()
-  df_efeme = eph['datetime_str', 'datetime_jd','RA', 'DEC', 'delta', 'r', 'alpha'].to_pandas()
-  return df_efeme
+  # Comandos estilo archivo .api
+  horizons_input = f"""
+  !$$SOF
+  COMMAND='{asteroide};'
+  OBJ_DATA='YES'
+  MAKE_EPHEM='YES'
+  TABLE_TYPE='OBSERVER'
+  CENTER='500@399'
+  START_TIME='{fecha_inicial}'
+  STOP_TIME='{fecha_final}'
+  STEP_SIZE='1 d'
+  QUANTITIES='1,19,20,43'
+  !$$EOF
+  """
+
+  # Enviar como parámetro 'input'
+  response = requests.post(url, data={'input': horizons_input})
+  data = response.json()
+
+  # Paso 3: Extraer el contenido plano del resultado
+  raw_result = data["result"]
+  start_idx = raw_result.find('$$SOE')+6
+  end_idx = raw_result.find('$$EOE')
+  lines = raw_result[start_idx:end_idx].splitlines()
+
+  date, delta, r, alpha = [], [], [], []
+  for line in lines:
+    date  = np.append(date, line[1:12].strip())
+    delta = np.append(delta, float(line[76:93].strip()))
+    r     = np.append(r, float(line[48:63].strip()))
+    alpha = np.append(alpha, float(line[108:115].strip()))
+
+  efe = pd.DataFrame({'Date':date,'Date JD': [Date_to_julian(i) for i in date],'Delta':delta,'r':r,'fase':alpha})
+
+  return efe

@@ -1,67 +1,80 @@
 import pandas as pd
 import numpy as np
-from astroquery.mpc import MPC
+from utils import Date_to_julian, Date_to_julian_N
+from data_obtention import periodo_fecha_perihelio
 
+# Ver el documento "C:\Users\Asus\Desktop\APP_MPC_agrupados_version3\Corrección a la banda V programa.docx"
 def Correccion_Banda(df):
-  '''
-  La lista actual de bandas de magnitud aceptables por el MPC es: B, V, R, I, J, W, U, C, L, H, K, Y, G, g, r, i, w, y, z, o, c, v, u.
-  La conversión a la banda V utilizada por MPC se encuentra en la página: https://www.minorplanetcenter.net/iau/info/BandConversion.txt
-  '''
-  Correcciones={'U':-1.3,
-                'B':-0.8,
-                'g':-0.35,
-                'V':0,
-                'r':0.14,
+  Correcciones={'V':0,
                 'R':0.4,
-                'C':0.4,
-                'W':0.4,
-                'i':0.32,
-                'z':0.26,
-                'I':0.8,
-                'J':1.2,
-                'w':-0.13,
-                'y':0.32,
-                'L':0.2,
-                'H':1.4,
-                'K':1.7,
-                'Y':0.7,
                 'G':0.28,
-                'v':0,
+                'C':0.4,
+                'r':0.14,
+                'g':-0.35,
                 'c':-0.05,
                 'o':0.33,
-                'u':2.5,
+                'w':-0.13,
+                'i':0.32,
+                'v':0,
+                'Vj':0,
+                'Rc':0.4,
+                'Sg':-0.35,
+                'Sr':0.14,
+                'Si':0.32,
+                'Pg':-0.35,
+                'Pr':0.14,
+                'Pi':0.32,
+                'Pw':-0.13,
+                'Ao':0.33,
+                'Ac':-0.05,
+                ''  :np.nan, # -0.8,
+                'U' :np.nan, # -1.3,
+                'u' :np.nan, # 2.5,
+                'B' :np.nan, # -0,
+                'I' :np.nan, # 0.8,
+                'J' :np.nan, # 1.2,
+                'H' :np.nan, # 1.4,
+                'K' :np.nan, # 1.7,
+                'W' :np.nan, # 0.4,
+                'Y' :np.nan, # 0.7,
+                'z' :np.nan, # 0.26,
+                'y' :np.nan, # 0.32,
+                'Lu':np.nan, #2.5,
+                'Lg':np.nan, #-0.35,
+                'Lr':np.nan, #0.14,
+                'Lz':np.nan, #0.26,
+                'Ly':np.nan, #0.32,
+                'VR':np.nan, #0,
+                'Ic':np.nan, #0.8,
+                'Bj':np.nan, #-0.8,
+                'Uj':np.nan, #-1.3,
+                'Sz':np.nan, #0.26,
+                'Pz':np.nan, #0.26,
+                'Py':np.nan, #0.32,
+                'Gb':np.nan,
+                'Gr':np.nan,
                 'N':np.nan,
-                'T':np.nan}
-
-  magn_sin_Banda = np.zeros(len(df))
-  magn_con_Banda = df['Magn']
-
+                'T':np.nan,
+                }
+  
+  magn_con_Banda = df['mag'].copy()
   #Corrección estándar para convertir una magnitud en cualquier banda a banda V
-  for i in range(len(magn_con_Banda)):
+  for i in range(len(df)):
     for j in range(len(Correcciones)):
-      if magn_con_Banda[i][-1]==list(Correcciones.keys())[j]:
-        magn_sin_Banda[i]=float(magn_con_Banda[i].replace(list(Correcciones.keys())[j],''))+list(Correcciones.values())[j]
+      if df['band'].iloc[i]==list(Correcciones.keys())[j]:
+        magn_con_Banda.iloc[i]=float(df['mag'].iloc[i])+list(Correcciones.values())[j]
+    
+    if pd.isna(df['band'].iloc[i]):
+      magn_con_Banda.iloc[i]=np.nan
 
 
-
-  #Correción estandar para magnitudes sin banda explicita a banda V es de 0.8 (https://www.minorplanetcenter.net/iau/info/BandConversion.txt)
-  for k in range(len(magn_sin_Banda)):
-    if magn_sin_Banda[k]==0:
-      magn_sin_Banda[k]=float(magn_con_Banda[k])-0.8
-
-  df['Magn corregiada a banda V'] = magn_sin_Banda
+  df['Magn corregiada a banda V'] = magn_con_Banda
   df=df.dropna().reset_index(drop=True)
 
   return df
 
-def Periodo_y_Perihelio(asteroide):
-  datos = MPC.query_object('asteroid',number=asteroide,return_fields='period,perihelion_date,perihelion_date_jd')[0]
-  periodo = float(datos['period'])*365.25
-  fecha_perihelio = float(datos['perihelion_date_jd'])
-  return periodo, fecha_perihelio
 
-def Distancia_Perihelio(asteroide, df_obs):
-  periodo,fecha_perihelio = Periodo_y_Perihelio(asteroide)
+def Distancia_Perihelio(df_obs,periodo,fecha_perihelio):
   def condicion(fecha,period=periodo):
     if (fecha_perihelio-fecha)%period >= period/2:
         distacia_al_perihelio=period-((fecha_perihelio-fecha)%period)
@@ -72,19 +85,41 @@ def Distancia_Perihelio(asteroide, df_obs):
   df_obs['Distancia_Perihelio'] = df_obs['Julian Day'].apply(condicion)
   return df_obs
 
+def limpieza_obsevaciones(asteroide,df_obs_sin_limpiar, fecha_inicial, fecha_final):
+  #Eliminar filas con almenos un NaN en la columna Magn y seleccion de las columnas que se van a usar
+  df_obs_sin_nan= df_obs_sin_limpiar.dropna(subset=['mag'])[['obsTime','mag','band']].reset_index(drop=True)
+
+  #Seleccion de solo las observaciones en Filtro V y R, y cambio de formato de fecha
+  df_obs = Correccion_Banda(df_obs_sin_nan)
+
+  #Agrego columna con dia juliano
+  df_obs['Julian Day']=df_obs['obsTime'].apply(Date_to_julian)
+  df_obs['Julian Day N']=df_obs['obsTime'].apply(Date_to_julian_N)
+
+
+
+  #Rango de fechas
+  df_obs=df_obs[(df_obs['Julian Day']>=Date_to_julian(fecha_inicial)) & (df_obs['Julian Day']<=Date_to_julian(fecha_final))]
+
+  df_obs=df_obs.reset_index(drop=True)
+    
+  periodo, fecha_al_perihelio = periodo_fecha_perihelio(asteroide)
+  df_obs=Distancia_Perihelio(df_obs,periodo,fecha_al_perihelio)
+
+  return df_obs
+
+
 def organizacion_df(df):
-  df.insert(1, 'Año', df['Date (UT)'].apply(lambda x: x.split()[0].split('-')[0]))
-  df.insert(2, 'Mes', df['Date (UT)'].apply(lambda x: x.split()[1].split('-')[0]))
-  df.insert(3, 'Dia',df['Date (UT)'].apply(lambda x: int(float(x.split()[2].split('-')[0]))))
+  df.insert(1, 'Año', df['obsTime'].apply(lambda x: x.year))
+  df.insert(2, 'Mes', df['obsTime'].apply(lambda x: x.month))
+  df.insert(3, 'Dia', df['obsTime'].apply(lambda d:  round(d.day + d.hour / 24.0 + d.minute / (24.0 * 60.0) + d.second / (24.0 * 60.0 * 60.0) + d.microsecond / (24.0 * 60.0 * 60.0 * 1000000.0),2)))
+  df.drop(columns=['obsTime'], inplace=True)
 
-  df.drop(columns=['Date (UT)'], inplace=True)
-
-  df['delta'] = df['delta'].apply(lambda x: round(x,2))
+  df['Delta'] = df['Delta'].apply(lambda x: round(x,2))
   df['r'] = df['r'].apply(lambda x: round(x,2))
-  df['alpha'] = df['alpha'].apply(lambda x: round(x,2))
-  df['Magn'] = df['Magn'].apply(lambda x: round(x,2))
+  df['fase'] = df['fase'].apply(lambda x: round(x,2))
+  df['Magn'] = df['Magn'].apply(lambda x: round(float(x),2))
   df['Magn_abs'] = df['Magn_abs'].apply(lambda x: round(x,2))
 
   return df
-
 

@@ -1,43 +1,87 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from data_obtention import observaciones_APIMPC, efemerides_API
+from data_cleansing import limpieza_obsevaciones, organizacion_df
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
-from utils import Date_to_julian, Date_to_julian_N
-from data_obtention import observations_MPC, efemerides
-from data_cleansing import Correccion_Banda, Distancia_Perihelio, organizacion_df
+def obtencion_dataframe1(asteroide, fecha_inicial='1980 01 01', fecha_final='2025 07 12'):
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(obtencion_dataframe_async(asteroide, fecha_inicial, fecha_final))
+
+async def obtencion_dataframe_async(asteroide, fecha_inicial, fecha_final):
+    with ThreadPoolExecutor() as executor:
+        loop = asyncio.get_event_loop()
+
+        # Tareas en paralelo
+        obs_future = loop.run_in_executor(executor, lambda: limpieza_obsevaciones(
+            asteroide, observaciones_APIMPC(asteroide), fecha_inicial, fecha_final
+        ))
+
+        efem_future = loop.run_in_executor(executor, lambda: efemerides_API(
+            asteroide, fecha_inicial, fecha_final
+        ))
+
+        df_obs, df_efeme = await asyncio.gather(obs_future, efem_future)
+
+    # Fusionar resultados
+    df_total = pd.merge(df_obs, df_efeme, left_on='Julian Day N', right_on='Date JD', how='inner')[[
+        'obsTime', 'Distancia_Perihelio', 'Delta', 'r', 'fase', 'Magn corregiada a banda V'
+    ]]
+    df_total = df_total.rename(columns={'Magn corregiada a banda V': 'Magn'})
+    df_total['Magn_abs'] = df_total['Magn'].astype(float) - 5*np.log10(df_total['r'] * df_total['Delta'])
+
+    return organizacion_df(df_total)
 
 
-def limpieza_obsevaciones(asteroide,df_obs_sin_limpiar, fecha_inicial, fecha_final):
-  #Eliminar filas con almenos un NaN en la columna Magn y seleccion de las columnas que se van a usar
-  df_obs_sin_nan= df_obs_sin_limpiar.dropna()[['Date (UT)', 'Magn']].reset_index(drop=True)
-
-  #Seleccion de solo las observaciones en Filtro V y R, y cambio de formato de fecha
-  df_obs = Correccion_Banda(df_obs_sin_nan)
-
-  #Agrego columna con dia juliano
-  df_obs['Julian Day']=df_obs['Date (UT)'].apply(Date_to_julian)
-  df_obs['Julian Day N']=df_obs['Date (UT)'].apply(Date_to_julian_N)
-
-
-
-  #Rango de fechas
-  df_obs=df_obs[(df_obs['Julian Day']>=Date_to_julian(fecha_inicial)) & (df_obs['Julian Day']<=Date_to_julian(fecha_final))]
-
-  df_obs=df_obs.reset_index(drop=True)
-  df_obs=Distancia_Perihelio(asteroide, df_obs)
-
-  return df_obs
-
-def obtencion_dataframe(asteroide, fecha_inicial='1980 01 01', fecha_final='2025 07 09'):
+def obtencion_dataframe(asteroide, fecha_inicial='1980 01 01', fecha_final='2025 07 12'):
   #Obtencion de datos obsrvacionales MPC
-  df_obs = limpieza_obsevaciones(asteroide,observations_MPC(asteroide),fecha_inicial,fecha_final)
+  df_obs = limpieza_obsevaciones(asteroide,observaciones_APIMPC(asteroide),fecha_inicial,fecha_final)
 
   #Obtención efemerides
-  df_efeme = efemerides(asteroide,fecha_inicial,fecha_final)
+  df_efeme = efemerides_API(asteroide,fecha_inicial,fecha_final)
 
   #dataframe total
-  df_total=pd.merge(df_obs, df_efeme, left_on='Julian Day N', right_on='datetime_jd', how='inner')[['Date (UT)','Distancia_Perihelio','delta','r','alpha','Magn corregiada a banda V']]
+  df_total=pd.merge(df_obs, df_efeme, left_on='Julian Day N', right_on='Date JD', how='inner')[['obsTime','Distancia_Perihelio','Delta','r','fase','Magn corregiada a banda V']]
   df_total = df_total.rename(columns={'Magn corregiada a banda V': 'Magn'})
-  df_total['Magn_abs'] = df_total['Magn'].astype(float) - 5*np.log10(df_total['r']*df_total['delta'])
+  df_total['Magn_abs'] = df_total['Magn'].astype(float) - 5*np.log10(df_total['r']*df_total['Delta'])
 
   return organizacion_df(df_total)
 
+        # Función de filtrado
+def fase_menor_5(data_sin_editar):
+  data = data_sin_editar.copy()
+  fase = data['fase'].to_numpy()
+  data['fase'] = np.where(fase < 5, np.nan, fase)
+  return data.dropna().reset_index(drop=True)
+
+
+def grafica_fase(df, title='none', familia='none'):
+  fig, ax = plt.subplots(figsize=(6, 5))
+
+  # First plot (Phase Curve)
+  ax.plot(df['fase'], df['Magn_abs'].astype(float), 'o', markerfacecolor='cyan', markeredgecolor='blue', markersize=2)
+  ax.set_title(f'{title} - Curva de Fase')
+  ax.set_ylim(max(df['Magn_abs'])+1, min(df['Magn_abs'])-1)
+  ax.set_xlim(0, max(df['fase'])+1)
+  ax.set_xlabel('Fase')
+  ax.set_ylabel('Magnitud')
+  ax.grid()
+
+  return fig
+
+def grafica_SLC(df, title='none', familia='none'):
+  fig, ax = plt.subplots(figsize=(6, 5))
+
+  # Second plot (SLC)
+  ax.plot(df['Distancia_Perihelio'], df['Magn_abs'].astype(float), 'o', markerfacecolor='cyan', markeredgecolor='blue', markersize=2)
+  ax.set_ylim(max(df['Magn_abs'])+1, min(df['Magn_abs'])-1)
+  ax.set_xlim(min(df['Distancia_Perihelio'])-50, max(df['Distancia_Perihelio'])+50)
+  ax.set_title(f'{title} - SLC')
+  ax.set_xlabel('Distancia al perihelio [días]')
+  ax.set_ylabel('Magnitud')
+  ax.grid()
+
+
+  return fig
